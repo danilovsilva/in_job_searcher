@@ -1,0 +1,8 @@
+passwd.py
+.trash
+env
+jobs.xmlx
+chrome-win64
+*.xlsx
+LICENSE.chromedriver
+__pycache__
