@@ -36,6 +36,7 @@ class LinkedInJobScraper:
         job_url = "%20".join(job_name.split())
         country_url = "%20".join(country_name.split())
         url = f"https://www.linkedin.com/jobs/search?keywords={job_url}&location={country_url}&geoId=103644278&trk=public_jobs_jobs-search-bar_search-submit&f_WT=2&position=1&pageNum=0"
+        print(url)
         return url
 
     def initialize_driver(self):
@@ -64,31 +65,32 @@ class LinkedInJobScraper:
 
                 if not self.contains_bad_keywords(jd_text) and self.contains_good_keywords(jd_text):
                     print("Encontrado 1 job")
-                    keywords_text = [word for word in keywords_good if word.lower() in jd_text.lower()]
                     job_title = self.driver.find_element(By.XPATH, "//h2[@class='t-24 t-bold jobs-unified-top-card__job-title']").get_attribute("innerText")
-                    company_name = self.driver.find_element(By.XPATH, "//a[@class='ember-view t-black t-normal']").get_attribute("innerText")
-                    location = self.driver.find_element(By.XPATH, "//span[@class='jobs-unified-top-card__subtitle-primary-grouping t-black']/span[2]").get_attribute("innerText")
-                    job_link = self.driver.find_element(By.XPATH, "//div[@class='display-flex justify-space-between']/a").get_attribute("href")
+                    if job_name in job_title:
+                        keywords_text = [word for word in keywords_good if word.lower() in jd_text.lower()]
+                        company_name = self.driver.find_element(By.XPATH, "//a[@class='ember-view t-black t-normal']").get_attribute("innerText")
+                        location = self.driver.find_element(By.XPATH, "//span[@class='jobs-unified-top-card__subtitle-primary-grouping t-black']/span[2]").get_attribute("innerText")
+                        job_link = self.driver.find_element(By.XPATH, "//div[@class='display-flex justify-space-between']/a").get_attribute("href")
 
-                    applied = "YES" if self.driver.find_elements(By.XPATH, "//span[@class='artdeco-inline-feedback__message']") else ''
+                        applied = "YES" if self.driver.find_elements(By.XPATH, "//span[@class='artdeco-inline-feedback__message']") else ''
 
-                    if jobs[i].find_elements(By.XPATH, ".//ul[@class='job-card-list__footer-wrapper job-card-container__footer-wrapper flex-shrink-zero display-flex t-sans t-12 t-black--light t-normal t-roman']/li/time"):
-                        date_posted = jobs[i].find_element(By.XPATH, ".//ul[@class='job-card-list__footer-wrapper job-card-container__footer-wrapper flex-shrink-zero display-flex t-sans t-12 t-black--light t-normal t-roman']/li/time").get_attribute("datetime")
-                    else:
-                        date_posted = ""
+                        if jobs[i].find_elements(By.XPATH, ".//ul[@class='job-card-list__footer-wrapper job-card-container__footer-wrapper flex-shrink-zero display-flex t-sans t-12 t-black--light t-normal t-roman']/li/time"):
+                            date_posted = jobs[i].find_element(By.XPATH, ".//ul[@class='job-card-list__footer-wrapper job-card-container__footer-wrapper flex-shrink-zero display-flex t-sans t-12 t-black--light t-normal t-roman']/li/time").get_attribute("datetime")
+                        else:
+                            date_posted = ""
 
-                    df = pd.DataFrame({
-                        'Title': job_title,
-                        'Company': company_name,
-                        'Location': location,
-                        'Link': job_link,
-                        'Keywords': ' '.join(keywords_text),
-                        'Description': jd_text,
-                        'Applied': applied,
-                        'Date_posted': date_posted
-                    }, index=['Link'])
+                        df = pd.DataFrame({
+                            'Title': job_title,
+                            'Company': company_name,
+                            'Location': location,
+                            'Link': job_link,
+                            'Keywords': ' '.join(keywords_text),
+                            'Description': jd_text,
+                            'Applied': applied,
+                            'Date_posted': date_posted
+                        }, index=['Link'])
 
-                    self.jobs_df = pd.concat([self.jobs_df, df])
+                        self.jobs_df = pd.concat([self.jobs_df, df])
 
                 time.sleep(0.5 + random.random())
 
@@ -151,7 +153,14 @@ keywords_bad = [
     "clt",
     "no C2C",
     "Anywhere in USA",
-    "anywhere in the EST in the US"
+    "anywhere in the EST in the US",
+    "within the US",
+    "Remote - UK",
+    "located in India",
+    "anywhere (in Europe)",
+    "within Germany",
+    "anywhere in the Philippines",
+    "anywhere in Australia"
 ]
 
 keywords_good = [
@@ -167,7 +176,12 @@ keywords_good = [
     "li-remote",
     "work from home",
     "llc",
-    "wfh"
+    "wfh",
+    "100% remote",
+    "within Latin America",
+    "within latam",
+    "payment in usd",
+    "Latin America"
 ]
 
 # Init the code
