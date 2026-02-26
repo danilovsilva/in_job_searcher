@@ -1,0 +1,113 @@
+# =========================
+# in_job_searcher parameters
+# =========================
+
+# Search parameters
+job_name: "Senior Data Engineer"   # Job keywords used in LinkedIn search URL
+location: "Remote"                # Location used in LinkedIn search URL
+max_pages: 3                       # Number of result pages to iterate (each page is usually ~25 jobs)
+
+# Browser / behavior
+headless: false                    # If true, runs Chrome in headless mode
+sleep_min_seconds: 2.0             # Minimum delay (seconds) for random sleeps between steps
+sleep_max_seconds: 5.0             # Maximum delay (seconds) for random sleeps between steps
+
+# Output
+output_file: "jobs.xlsx"           # Output file path (.xlsx or .csv)
+append_existing_jobs: false        # If true, duplicates can be appended as new rows (NOT recommended)
+                                  # IMPORTANT: regardless of this setting, if a job already exists we always update its "last_seen" date.
+save_after_each_job: true
+
+# Inclusion policy
+require_at_least_one_positive_keyword: true  # If true, job must match >=1 positive keyword to be eligible (unless overridden below)
+allow_add_without_positive_match: false      # If true, jobs with zero positive matches can still be added (as long as not blocked)
+
+# Keyword rules
+# Positive keywords (good signals): weight increases ranking score when found.
+positive_keywords:
+  # "Data Engineer": 5
+  # "Senior Data Engineer": 6
+  # "Staff Data Engineer": 7
+  # "Data Architect": 5
+  "Remote": 1
+  "Remote from anywhere": 10
+  "remote first": 7
+  "work from anywhere": 10
+  "Worldwide": 10
+  "Distributed team": 4
+  "global team": 4
+  "LATAM": 6
+  "global": 4
+  "(global)": 4
+
+  " B2B ": 10
+  "Databricks": 6
+  "Azure": 6
+  "Pipeline": 3
+  "Independent contractor": 7
+  "Contractor": 7
+
+# Negative keywords (bad signals): weight decreases ranking score when found but do not automatically exclude
+negative_keywords:
+  "Software developer": 4
+  "based in US": 6
+  "US based": 6
+  "Remote from US": 6
+  "Must be located in": 6
+  # "Remote Canada": 4
+  # "Remote United States": 6
+  # "anywhere in the EU": 5
+  # "US citizens": 10
+  # "reside in the United States": 10
+  # "US only": 10
+  # "W2 only": 10
+  # "1099 US only": 10
+  # "C2C US only": 10
+  "W2 position": 8
+  "work authorization": 8
+
+# Blocklist keywords: if any is found, the job is skipped entirely and never goes to output.
+blocklist_keywords:
+  - "US citizens only"
+  - "must be a US citizen"
+  - "active U.S. government issued security clearance"
+  - "TS/SCI"
+  - "security clearance required"
+
+  - "Remote Canada"
+  - "Remote United States"
+  - "anywhere in the EU"
+  - "US citizens"
+  - "reside in the United States"
+  - "US only"
+  - "W2 only"
+  - "1099 US only"
+  - "C2C US only"
+  - "Remote from US"
+
+# Search URL controls (LinkedIn)
+geo_id: 92000000            # Worldwide
+remote_filter_f_wt: 2       # Remote filter (f_WT=2)
+start_step: 25              # Usually 25 results per page
+
+
+# =========================
+# Scraping selectors
+# =========================
+
+job_container_selector: "div.artdeco-entity-lockup__content"
+job_link_selector: 'a[href*="/jobs/view/"]'
+company_selector: "div.artdeco-entity-lockup__subtitle span"
+location_selector: "div.artdeco-entity-lockup__caption span"
+
+description_selectors:
+  - "div.jobs-description__content"
+  - "div.jobs-box__html-content"
+
+left_list_scroll_container_selectors:
+  - "div.scaffold-layout__list"
+  # - "div.scaffold-layout__list-container"
+  # - "div.jobs-search-results-list"
+  # - "div.scaffold-layout__list-detail-inner"
+left_list_scroll_max_rounds: 25
+left_list_scroll_pause_seconds: 1.0
