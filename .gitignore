@@ -1,8 +1,10 @@
-passwd.py
 .trash
 env
 jobs.xmlx
 chrome-win64
-*.xlsx
 LICENSE.chromedriver
 __pycache__
+.env
+*.csv
+*.xlsx
+.venv/
