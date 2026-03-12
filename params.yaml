@@ -13,7 +13,7 @@ sleep_min_seconds: 2.0             # Minimum delay (seconds) for random sleeps b
 sleep_max_seconds: 5.0             # Maximum delay (seconds) for random sleeps between steps
 
 # Output
-output_file: "jobs.xlsx"           # Output file path (.xlsx or .csv)
+output_file: "C:/Users/Danilo/OneDrive/Documents/Curriculo/2026/jobs.xlsx"           # Output file path (.xlsx or .csv)
 append_existing_jobs: false        # If true, duplicates can be appended as new rows (NOT recommended)
                                   # IMPORTANT: regardless of this setting, if a job already exists we always update its "last_seen" date.
 save_after_each_job: true
@@ -40,12 +40,16 @@ positive_keywords:
   "global": 4
   "(global)": 4
 
-  " B2B ": 10
+  "B2B ": 10
   "Databricks": 6
   "Azure": 6
   "Pipeline": 3
   "Independent contractor": 7
   "Contractor": 7
+  "Brazil": 3
+  "Work From Home": 4 
+  "WFH": 4
+  "LI-Remote": 5
 
 # Negative keywords (bad signals): weight decreases ranking score when found but do not automatically exclude
 negative_keywords:
@@ -65,6 +69,11 @@ negative_keywords:
   # "C2C US only": 10
   "W2 position": 8
   "work authorization": 8
+  "anywhere within the European": 20
+  "Power BI": 20
+  "Possible on-site locations": 10
+  "US locations": 7
+  "crypto": 3
 
 # Blocklist keywords: if any is found, the job is skipped entirely and never goes to output.
 blocklist_keywords:
@@ -84,11 +93,48 @@ blocklist_keywords:
   - "1099 US only"
   - "C2C US only"
   - "Remote from US"
+  
+# Ignore list (jobs you already reviewed and don't want to see again)
+ignored_job_ids:
+  - "4370882746"
+
+# Excel formatting
+apply_row_formatting: true
 
 # Search URL controls (LinkedIn)
 geo_id: 92000000            # Worldwide
 remote_filter_f_wt: 2       # Remote filter (f_WT=2)
 start_step: 25              # Usually 25 results per page
+
+# Status detection
+status_closed_texts:
+  - "Não aceita mais candidaturas"
+  - "No longer accepting applications"
+  - "This job is no longer accepting applications"
+
+status_applied_texts:
+  - "Candidatou-se"
+  - "Candidatou-se no site da empresa"
+  - "Candidatura enviada"
+  - "Applied"
+  - "You applied"
+  - "Application submitted"
+  - "Applied on company website"
+  - "Applied on the company website"
+
+required_title_keywords:
+  - "data engineer"
+  - "analytics engineer"
+  - "staff data engineer"
+  - "senior data engineer"
+  - "principal data engineer"
+  - "data"
+
+blocklist_keywords:
+  - "software engineer"
+  - "frontend"
+  - "fullstack"
+  - "ML"
 
 
 # =========================
@@ -111,3 +157,23 @@ left_list_scroll_container_selectors:
   # - "div.scaffold-layout__list-detail-inner"
 left_list_scroll_max_rounds: 25
 left_list_scroll_pause_seconds: 1.0
+
+# Status detection
+status_selectors:
+  # LinkedIn success banner (applied)
+  applied_banner: "div.artdeco-inline-feedback--success span.artdeco-inline-feedback__message"
+
+  # Generic alert containers (sometimes used for closed / warnings)
+  any_alert_container: '[role="alert"]'
+
+  # Optional: right panel root (limits text scanning)
+  # right_panel_root: "div.scaffold-layout__detail"
+  right_panel_root: "body"
+  
+  # NEW: application status section (the one from your screenshot)
+  application_status_section: "section, div"
+
+# status_selectors:
+#   applied_banner: "div.artdeco-inline-feedback--success span.artdeco-inline-feedback__message"
+#   any_alert_container: '[role="alert"]'
+#   right_panel_root: "body"

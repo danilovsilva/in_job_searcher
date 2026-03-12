@@ -1,5 +1,5 @@
 selenium
-pandas
 python-dotenv
-openpyxl
 pyyaml
+pandas
+openpyxl
