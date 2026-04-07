@@ -2,7 +2,6 @@ import os
 from pathlib import Path
 from datetime import datetime
 
-import pandas as pd
 from dotenv import load_dotenv
 
 from main import (
@@ -12,8 +11,10 @@ from main import (
     init_driver,
     load_params,
     login_linkedin,
+    read_existing_output,
+    recalculate_output_rows,
     sleep_random,
-    write_output,
+    write_output_with_failback,
 )
 
 
@@ -43,16 +44,19 @@ def update_status():
         print(f"Output file not found: {output_file}")
         return
 
-    if output_file.lower().endswith(".csv"):
-        df = pd.read_csv(output_file)
+    df = read_existing_output(output_file)
+    df = recalculate_output_rows(df, params)
+    saved_path, used_failback = write_output_with_failback(
+        df,
+        output_file,
+        apply_formatting=apply_row_formatting,
+    )
+    if used_failback and saved_path:
+        print(f"[WARN] Recalculated output redirected to failback -> {saved_path} (rows={len(df)})")
+    elif saved_path:
+        print(f"[INFO] Recalculated output using current params -> {saved_path} (rows={len(df)})")
     else:
-        df = pd.read_excel(output_file)
-
-    required_columns = ["url", "status", "status_detail", "last_scraped_at"]
-    for col in required_columns:
-        if col not in df.columns:
-            df[col] = None
-        df[col] = df[col].astype("object")
+        print("[WARN] Recalculated output failed and failback also failed. Continuing.")
 
     open_jobs = df[df["status"].fillna("").astype(str).str.strip().str.lower() == "open"].copy()
     print(f"Open jobs to update: {len(open_jobs)}")
@@ -76,14 +80,24 @@ def update_status():
 
                 status, detail = detect_job_status(driver, params)
 
-                df.at[idx, "status"] = status
-                df.at[idx, "status_detail"] = detail
+                df.at[idx, "linkedin_status"] = status
+                df.at[idx, "linkedin_status_detail"] = detail
                 df.at[idx, "last_scraped_at"] = datetime.utcnow().isoformat(timespec="seconds")
+                df = recalculate_output_rows(df, params)
 
-                print(f"Status -> {status}")
+                print(f"Status -> {df.at[idx, 'status']}")
 
-                write_output(df, output_file, apply_formatting=apply_row_formatting)
-                print(f"[INFO] Incremental save -> {output_file} (rows={len(df)})")
+                saved_path, used_failback = write_output_with_failback(
+                    df,
+                    output_file,
+                    apply_formatting=apply_row_formatting,
+                )
+                if used_failback and saved_path:
+                    print(f"[WARN] Incremental save redirected to failback -> {saved_path} (rows={len(df)})")
+                elif saved_path:
+                    print(f"[INFO] Incremental save -> {saved_path} (rows={len(df)})")
+                else:
+                    print("[WARN] Incremental save failed and failback also failed. Continuing.")
 
                 sleep_random(sleep_min, sleep_max)
 
