@@ -2,6 +2,7 @@ import os
 import time
 import random
 import re
+from pathlib import Path
 from datetime import datetime, date
 from typing import Dict, List, Optional, Tuple
 
@@ -11,22 +12,53 @@ from dotenv import load_dotenv
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
+from selenium.common.exceptions import StaleElementReferenceException
+
+from openpyxl import load_workbook
+from openpyxl.styles import PatternFill
 
 
 # =========================
 # Basic helpers
 # =========================
+PROJECT_DIR = Path(__file__).resolve().parent
+PARAMS_PATH = PROJECT_DIR / "params.yaml"
+
 
 def utc_now_iso() -> str:
     return datetime.utcnow().isoformat(timespec="seconds")
+
 
 
 def today_iso() -> str:
     return date.today().isoformat()
 
 
+
 def normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+
+
+def extract_job_id_from_url(raw_url: str) -> Optional[str]:
+    raw_url = (raw_url or "").strip()
+    m = re.search(r"/jobs/view/(\d+)", raw_url)
+    if not m:
+        return None
+    return m.group(1)
+
+
+
+def canonical_job_url(raw_url: str) -> str:
+    """
+    Normalize LinkedIn job URLs so the same job doesn't create duplicates due to tracking params.
+    Keeps only: https://www.linkedin.com/jobs/view/<job_id>/
+    """
+    job_id = extract_job_id_from_url(raw_url)
+    if not job_id:
+        return (raw_url or "").strip()
+    return f"https://www.linkedin.com/jobs/view/{job_id}/"
+
 
 
 def sleep_random(min_s: float, max_s: float) -> None:
@@ -38,12 +70,31 @@ def sleep_random(min_s: float, max_s: float) -> None:
     time.sleep(random.uniform(min_s, max_s))
 
 
-def load_params(params_path: str) -> Dict:
+
+def load_params(params_path) -> Dict:
     with open(params_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
 
 
-def build_linkedin_url(job_name: str, geo_id: int, remote_f_wt: Optional[int], start: int = 0) -> str:
+def resolve_job_names(params: Dict) -> List[str]:
+    raw_job_names = params.get("job_name", "")
+
+    if isinstance(raw_job_names, str):
+        job_names = [raw_job_names]
+    elif isinstance(raw_job_names, list):
+        job_names = [str(item) for item in raw_job_names]
+    else:
+        raise SystemExit("Invalid 'job_name' in params.yaml. Use a string or a list of strings.")
+
+    cleaned_job_names = [name.strip() for name in job_names if str(name).strip()]
+    if not cleaned_job_names:
+        raise SystemExit("No valid job names found in params.yaml. Fill 'job_name' with at least one value.")
+
+    return cleaned_job_names
+
+
+
+def build_linkedin_url(job_name: str, geo_id: int, remote_f_wt: Optional[int], sort_by_most_recent: Optional[int], start: int = 0) -> str:
     """
     Build a LinkedIn Jobs search URL using geoId and optional remote filter.
     Example:
@@ -58,7 +109,11 @@ def build_linkedin_url(job_name: str, geo_id: int, remote_f_wt: Optional[int], s
     params.append(f"geoId={int(geo_id)}")
     params.append(f"keywords={quote(job_name)}")
     params.append(f"start={int(start)}")
-    return base + "&".join(params)
+    if sort_by_most_recent is not None:
+        params.append("&sortBy=DD")
+    return base + "&".join(params)+""
+
+
 
 def init_driver(headless: bool) -> webdriver.Chrome:
     options = Options()
@@ -71,6 +126,7 @@ def init_driver(headless: bool) -> webdriver.Chrome:
     return webdriver.Chrome(options=options)
 
 
+
 def login_linkedin(driver: webdriver.Chrome, email: str, password: str, sleep_min: float, sleep_max: float) -> None:
     driver.get("https://www.linkedin.com/login")
     sleep_random(sleep_min, sleep_max)
@@ -79,6 +135,7 @@ def login_linkedin(driver: webdriver.Chrome, email: str, password: str, sleep_mi
     driver.find_element(By.ID, "password").send_keys(password)
     driver.find_element(By.XPATH, "//button[@type='submit']").click()
     sleep_random(sleep_min, sleep_max)
+
 
 
 def find_first_text_by_selectors(driver: webdriver.Chrome, selectors: List[str]) -> str:
@@ -92,6 +149,16 @@ def find_first_text_by_selectors(driver: webdriver.Chrome, selectors: List[str])
         except Exception:
             continue
     return ""
+
+
+
+def clean_job_title(raw_title: str) -> str:
+    """
+    Clean LinkedIn job titles that may include extra labels like 'with verification'.
+    """
+    t = (raw_title or "").strip()
+    t = re.sub(r"\s+with verification\s*$", "", t, flags=re.IGNORECASE)
+    return t.strip()
 
 
 # =========================
@@ -108,6 +175,7 @@ def keyword_matches(text: str, weighted_keywords: Dict[str, int]) -> List[str]:
     return matched
 
 
+
 def any_blocked(text: str, blocklist: List[str]) -> Optional[str]:
     """Return the blocking keyword if any is found, else None."""
     blob = normalize_text(text)
@@ -115,6 +183,7 @@ def any_blocked(text: str, blocklist: List[str]) -> Optional[str]:
         if normalize_text(kw) in blob:
             return kw
     return None
+
 
 
 def compute_score(text: str, pos: Dict[str, int], neg: Dict[str, int]) -> Tuple[int, List[str], List[str]]:
@@ -136,18 +205,56 @@ def compute_score(text: str, pos: Dict[str, int], neg: Dict[str, int]) -> Tuple[
 # =========================
 
 OUTPUT_COLUMNS = [
-    "url",
     "title",
     "company",
     "location",
+    "status",
+    "linkedin_status",
     "score",
     "matched_positive_keywords",
     "matched_negative_keywords",
+    "url",
+    "job_id",
     "description",
     "first_seen",
     "last_seen",
     "last_scraped_at",
+    "status_detail",
+    "linkedin_status_detail",
+    "notes",
 ]
+
+
+LOCAL_SKIP_NOTE_PATTERNS = [
+    "not applying",
+    "skip",
+]
+
+
+LOCAL_DERIVED_STATUSES = {"canceled", "cancelled", "skipped", "skiped"}
+
+
+def ensure_output_schema(df: pd.DataFrame) -> pd.DataFrame:
+    if "notes" not in df.columns and "Note" in df.columns:
+        df["notes"] = df["Note"]
+
+    for c in OUTPUT_COLUMNS:
+        if c not in df.columns:
+            df[c] = None
+
+    missing_linkedin_status = df["linkedin_status"].isna() | (df["linkedin_status"].astype(str).str.strip() == "")
+    current_status = df["status"].fillna("").astype(str)
+    non_local_status = ~current_status.str.strip().str.lower().isin(LOCAL_DERIVED_STATUSES)
+    df.loc[missing_linkedin_status & non_local_status, "linkedin_status"] = current_status
+
+    missing_linkedin_detail = df["linkedin_status_detail"].isna() | (df["linkedin_status_detail"].astype(str).str.strip() == "")
+    df.loc[missing_linkedin_detail, "linkedin_status_detail"] = df["status_detail"]
+
+    df = df[OUTPUT_COLUMNS]
+    df["url"] = df["url"].apply(lambda x: canonical_job_url(str(x)) if pd.notna(x) else "")
+    df["job_id"] = df["url"].apply(lambda u: extract_job_id_from_url(u) or "")
+    return df
+
 
 
 def read_existing_output(output_file: str) -> pd.DataFrame:
@@ -160,267 +267,279 @@ def read_existing_output(output_file: str) -> pd.DataFrame:
             df = pd.read_csv(output_file)
         else:
             df = pd.read_excel(output_file)
-
-        for c in OUTPUT_COLUMNS:
-            if c not in df.columns:
-                df[c] = None
-
-        return df[OUTPUT_COLUMNS]
+        return ensure_output_schema(df)
     except Exception:
-        # If unreadable/corrupted, do not crash; start fresh.
         return pd.DataFrame(columns=OUTPUT_COLUMNS)
 
 
-def write_output(df: pd.DataFrame, output_file: str) -> None:
-    if output_file.lower().endswith(".csv"):
-        df.to_csv(output_file, index=False)
-    else:
-        df.to_excel(output_file, index=False)
+
+def find_matching_keyword(text: str, keywords: List[str]) -> Optional[str]:
+    blob = normalize_text(text)
+    for kw in keywords or []:
+        kw_str = str(kw).strip()
+        kw_norm = normalize_text(kw_str)
+        if kw_norm and kw_norm in blob:
+            return kw_str
+    return None
 
 
-# =========================
-# Scraping
-# =========================
+def derive_effective_row_state(row: pd.Series, params: Dict) -> Dict[str, object]:
+    title = str(row.get("title") or "").strip()
+    company = str(row.get("company") or "").strip()
+    job_loc = str(row.get("location") or "").strip()
+    description = str(row.get("description") or "").strip()
+    notes = str(row.get("notes") or row.get("Note") or "").strip()
 
-def scrape_jobs(driver: webdriver.Chrome, params: Dict, existing_df: pd.DataFrame, output_file: str) -> pd.DataFrame:
-    job_name = str(params.get("job_name", "")).strip()
-    location = str(params.get("location", "")).strip()
-    max_pages = int(params.get("max_pages", 1))
-
-    sleep_min = float(params.get("sleep_min_seconds", 1.0))
-    sleep_max = float(params.get("sleep_max_seconds", 2.0))
-
-    # New structured selectors (from params.yaml)
-    job_container_selector = str(params.get("job_container_selector", "")).strip()
-    job_link_selector = str(params.get("job_link_selector", "")).strip()
-    company_selector = str(params.get("company_selector", "")).strip()
-    location_selector = str(params.get("location_selector", "")).strip()
-
-    # Description is still multi-selector fallback (right panel)
-    description_selectors = params.get("description_selectors", []) or []
-
-    append_existing_jobs = bool(params.get("append_existing_jobs", False))
-
-    require_pos = bool(params.get("require_at_least_one_positive_keyword", True))
-    allow_without_pos = bool(params.get("allow_add_without_positive_match", False))
-
+    combined_text = " ".join([title, company, job_loc, description]).strip()
     pos_keywords = params.get("positive_keywords", {}) or {}
     neg_keywords = params.get("negative_keywords", {}) or {}
     blocklist = params.get("blocklist_keywords", []) or []
+    required_title_keywords = params.get("required_title_keywords", []) or []
+    title_blocklist_keywords = params.get("title_blocklist_keywords", []) or []
+    require_pos = bool(params.get("require_at_least_one_positive_keyword", True))
+    allow_without_pos = bool(params.get("allow_add_without_positive_match", False))
 
-    geo_id = int(params.get("geo_id", 92000000))
-    remote_f_wt = params.get("remote_filter_f_wt", 2)
-    start_step = int(params.get("start_step", 25))
+    score, matched_pos, matched_neg = compute_score(combined_text, pos_keywords, neg_keywords)
 
-    if not job_container_selector or not job_link_selector:
-        raise SystemExit(
-            "Missing required selectors in params.yaml: job_container_selector and job_link_selector"
-        )
+    linkedin_status = str(row.get("linkedin_status") or "").strip()
+    linkedin_detail = row.get("linkedin_status_detail")
+    if not linkedin_status:
+        current_status = str(row.get("status") or "").strip()
+        if normalize_text(current_status) not in LOCAL_DERIVED_STATUSES:
+            linkedin_status = current_status
+            linkedin_detail = row.get("status_detail")
 
-    # Index existing rows by URL for fast lookup
-    existing_by_url: Dict[str, int] = {}
-    if not existing_df.empty:
-        for idx, row in existing_df.iterrows():
-            url = str(row.get("url") or "").strip()
-            if url:
-                existing_by_url[url] = idx
+    effective_status = linkedin_status or "open"
+    effective_detail = linkedin_detail
+    title_norm = normalize_text(title)
 
-    seen_in_this_run = set()
+    note_skip_match = find_matching_keyword(notes, LOCAL_SKIP_NOTE_PATTERNS)
+    title_blocked_by = find_matching_keyword(title, title_blocklist_keywords)
+    blocked_by = any_blocked(combined_text, blocklist)
+    missing_required_title = bool(required_title_keywords) and not any(
+        normalize_text(k) in title_norm for k in required_title_keywords
+    )
+    lacks_required_positive = require_pos and (not matched_pos) and (not allow_without_pos)
 
-    for page in range(max_pages):
-        start = page * start_step
-        search_url = build_linkedin_url(job_name, geo_id, remote_f_wt, start=start)
+    if note_skip_match:
+        effective_status = "Skipped"
+        effective_detail = f"Skipped by notes: {notes or note_skip_match}"
+    elif title_blocked_by:
+        effective_status = "Canceled"
+        effective_detail = f"Canceled by title_blocklist_keywords: {title_blocked_by}"
+    elif blocked_by:
+        effective_status = "Canceled"
+        effective_detail = f"Canceled by blocklist_keywords: {blocked_by}"
+    elif missing_required_title:
+        effective_status = "Canceled"
+        effective_detail = "Canceled by required_title_keywords"
+    elif lacks_required_positive:
+        effective_status = "Canceled"
+        effective_detail = "Canceled by positive keyword policy"
 
-        print(f"[INFO] Page {page + 1}/{max_pages} -> Opening search URL: {search_url}")
-        driver.get(search_url)
-        sleep_random(sleep_min, sleep_max)
-        
-        scroll_left_results_panel(
-            driver,
-            container_selectors=params.get("left_list_scroll_container_selectors", []) or [],
-            job_container_selector=str(params.get("job_container_selector", "")).strip(),
-            max_rounds=int(params.get("left_list_scroll_max_rounds", 30)),
-            pause_s=float(params.get("left_list_scroll_pause_seconds", 1.0)),
-            sleep_min=sleep_min,
-            sleep_max=sleep_max,
-        )
-        sleep_random(sleep_min, sleep_max)
+    return {
+        "score": int(score),
+        "matched_positive_keywords": ", ".join(matched_pos),
+        "matched_negative_keywords": ", ".join(matched_neg),
+        "linkedin_status": linkedin_status or "open",
+        "linkedin_status_detail": linkedin_detail,
+        "status": effective_status,
+        "status_detail": effective_detail,
+    }
 
-        # Find containers first (structured approach)
-        try:
-            containers = driver.find_elements(By.CSS_SELECTOR, job_container_selector)
-        except Exception as e:
-            print(f"[WARN] Page {page + 1}: Failed to find containers -> {e}")
-            containers = []
 
-        print(f"[INFO] Page {page + 1}: Found {len(containers)} job containers")
+def recalculate_output_rows(df: pd.DataFrame, params: Dict) -> pd.DataFrame:
+    df = ensure_output_schema(df.copy())
 
-        for j, container in enumerate(containers, start=1):
-            print(f"[INFO] Page {page + 1}, Job {j} -> Processing container...")
-            sleep_random(sleep_min, sleep_max)
+    for idx, row in df.iterrows():
+        derived = derive_effective_row_state(row, params)
+        for key, value in derived.items():
+            df.at[idx, key] = value
 
-            try:
-                # Get link element inside the container
-                link_el = container.find_element(By.CSS_SELECTOR, job_link_selector)
-                job_url = (link_el.get_attribute("href") or "").strip()
-                if not job_url:
-                    print(f"[WARN] Page {page + 1}, Job {j}: Missing URL, skipping")
-                    continue
-
-                # Avoid duplicates within this run
-                if job_url in seen_in_this_run:
-                    print(f"[INFO] Page {page + 1}, Job {j}: Already processed in this run, skipping")
-                    continue
-                seen_in_this_run.add(job_url)
-
-                # Title: prefer aria-label (stable), fallback to text
-                title = (link_el.get_attribute("aria-label") or "").strip()
-                if not title:
-                    title = (link_el.text or "").strip()
-                
-                title = clean_job_title(title)
-
-                # Company and location (best-effort; can fail if selector changes)
-                company = ""
-                if company_selector:
-                    try:
-                        company = (container.find_element(By.CSS_SELECTOR, company_selector).text or "").strip()
-                    except Exception:
-                        company = ""
-
-                job_loc = ""
-                if location_selector:
-                    try:
-                        job_loc = (container.find_element(By.CSS_SELECTOR, location_selector).text or "").strip()
-                    except Exception:
-                        job_loc = ""
-
-                # Click the job link to load right panel description (best-effort)
-                try:
-                    driver.execute_script("arguments[0].click();", link_el)
-                except Exception:
-                    try:
-                        link_el.click()
-                    except Exception:
-                        pass
-
-                sleep_random(sleep_min, sleep_max)
-
-                description = find_first_text_by_selectors(driver, description_selectors)
-                combined_text = " ".join([title, company, job_loc, description])
-
-                # Blocklist: skip entirely if matched
-                blocked_by = any_blocked(combined_text, blocklist)
-                if blocked_by:
-                    print(f"[INFO] Page {page + 1}, Job {j}: Blocked by keyword -> {blocked_by}")
-                    continue
-
-                score, matched_pos, matched_neg = compute_score(combined_text, pos_keywords, neg_keywords)
-
-                # Inclusion policy
-                has_pos_match = len(matched_pos) > 0
-                if require_pos and (not has_pos_match) and (not allow_without_pos):
-                    print(f"[INFO] Page {page + 1}, Job {j}: No positive keyword match, skipping by policy")
-                    continue
-
-                now_date = today_iso()
-                now_ts = utc_now_iso()
-
-                if job_url in existing_by_url:
-                    idx = existing_by_url[job_url]
-
-                    # Always update last_seen + last_scraped_at
-                    existing_df.at[idx, "last_seen"] = now_date
-                    existing_df.at[idx, "last_scraped_at"] = now_ts
-
-                    # Refresh values (optional but useful)
-                    if title:
-                        existing_df.at[idx, "title"] = title
-                    if company:
-                        existing_df.at[idx, "company"] = company
-                    if job_loc:
-                        existing_df.at[idx, "location"] = job_loc
-
-                    existing_df.at[idx, "score"] = score
-                    existing_df.at[idx, "matched_positive_keywords"] = ", ".join(matched_pos)
-                    existing_df.at[idx, "matched_negative_keywords"] = ", ".join(matched_neg)
-
-                    existing_df.at[idx, "description"] = description or existing_df.at[idx, "description"]
-
-                    print(f"[OK] Page {page + 1}, Job {j}: Updated existing job (last_seen refreshed)")
-
-                    # If user wants duplicates, append another row (not recommended)
-                    if append_existing_jobs:
-                        new_row = {
-                            "url": job_url,
-                            "title": title,
-                            "company": company,
-                            "location": job_loc,
-                            "score": score,
-                            "matched_positive_keywords": ", ".join(matched_pos),
-                            "matched_negative_keywords": ", ".join(matched_neg),
-                            "description": description,
-                            "first_seen": existing_df.at[idx, "first_seen"] or now_date,
-                            "last_seen": now_date,
-                            "last_scraped_at": now_ts,
-                        }
-                        existing_df = pd.concat([existing_df, pd.DataFrame([new_row])], ignore_index=True)
-                        print(f"[OK] Page {page + 1}, Job {j}: Appended duplicate row (append_existing_jobs=true)")
-                        if bool(params.get("save_after_each_job", False)):
-                            try:
-                                write_output(existing_df, output_file)
-                                print(f"[INFO] Incremental save -> {output_file} (rows={len(existing_df)})")
-                            except Exception as e:
-                                print(f"[WARN] Incremental save failed -> {e}")
-
-                else:
-                    # New job: add it
-                    new_row = {
-                        "url": job_url,
-                        "title": title,
-                        "company": company,
-                        "location": job_loc,
-                        "score": score,
-                        "matched_positive_keywords": ", ".join(matched_pos),
-                        "matched_negative_keywords": ", ".join(matched_neg),
-                        "description": description,
-                        "first_seen": now_date,
-                        "last_seen": now_date,
-                        "last_scraped_at": now_ts,
-                    }
-                    existing_df = pd.concat([existing_df, pd.DataFrame([new_row])], ignore_index=True)
-                    existing_by_url[job_url] = existing_df.index[-1]
-                    print(f"[OK] Page {page + 1}, Job {j}: Added new job to output")
-                    if bool(params.get("save_after_each_job", False)):
-                        try:
-                            write_output(existing_df, output_file)
-                            print(f"[INFO] Incremental save -> {output_file} (rows={len(existing_df)})")
-                        except Exception as e:
-                            print(f"[WARN] Incremental save failed -> {e}")
-                
-
-            except Exception as e:
-                print(f"[WARN] Page {page + 1}, Job {j}: Error processing job -> {e}")
-
-        sleep_random(sleep_min, sleep_max)
-
-    # Sort by score desc, then last_seen desc
     try:
-        existing_df["score"] = pd.to_numeric(existing_df["score"], errors="coerce").fillna(0).astype(int)
-        existing_df = existing_df.sort_values(by=["score", "last_seen"], ascending=[False, False]).reset_index(drop=True)
+        df["score"] = pd.to_numeric(df["score"], errors="coerce").fillna(0).astype(int)
+        df = df.sort_values(by=["score", "last_seen"], ascending=[False, False]).reset_index(drop=True)
     except Exception:
         pass
 
-    return existing_df
+    return df
+
+
+def apply_status_formatting_xlsx(output_file: str, status_col_name: str = "status") -> None:
+    wb = load_workbook(output_file)
+    ws = wb.active
+
+    header = [cell.value for cell in ws[1]]
+    if status_col_name not in header:
+        wb.save(output_file)
+        return
+
+    status_idx = header.index(status_col_name) + 1
+    red_fill = PatternFill(start_color="FFFFC7CE", end_color="FFFFC7CE", fill_type="solid")
+    gray_fill = PatternFill(start_color="FFD9D9D9", end_color="FFD9D9D9", fill_type="solid")
+
+    for row in range(2, ws.max_row + 1):
+        status_val = ws.cell(row=row, column=status_idx).value
+        status_norm = normalize_text(str(status_val)) if status_val is not None else ""
+
+        fill = None
+        if status_norm in {"closed", "canceled", "cancelled", "skipped", "skiped"}:
+            fill = red_fill
+        elif status_norm == "applied":
+            fill = gray_fill
+
+        if fill:
+            for col in range(1, ws.max_column + 1):
+                ws.cell(row=row, column=col).fill = fill
+        else:
+            for col in range(1, ws.max_column + 1):
+                ws.cell(row=row, column=col).fill = PatternFill(fill_type=None)
+
+    wb.save(output_file)
+
+
+
+def is_permission_denied_error(error: Exception) -> bool:
+    msg = str(error or "").lower()
+    return (
+        isinstance(error, PermissionError)
+        or "permission denied" in msg
+        or "errno 13" in msg
+        or "[errno 13]" in msg
+    )
+
+
+def build_failback_output_path(output_file: str) -> str:
+    output_path = Path(output_file)
+    return str(output_path.with_name("output_failback.xlsx"))
+
+
+def write_output(df: pd.DataFrame, output_file: str, apply_formatting: bool = True) -> None:
+    if output_file.lower().endswith(".csv"):
+        df.to_csv(output_file, index=False)
+        return
+
+    df.to_excel(output_file, index=False)
+
+    if apply_formatting:
+        try:
+            apply_status_formatting_xlsx(output_file, status_col_name="status")
+        except Exception:
+            pass
+
+
+def write_output_with_failback(df: pd.DataFrame, output_file: str, apply_formatting: bool = True) -> Tuple[Optional[str], bool]:
+    try:
+        write_output(df, output_file, apply_formatting=apply_formatting)
+        return output_file, False
+    except Exception as e:
+        if not is_permission_denied_error(e):
+            raise
+
+        failback_output = build_failback_output_path(output_file)
+        print(
+            f"[WARN] Incremental save permission denied for '{output_file}' -> {e}. "
+            f"Trying failback save at '{failback_output}'."
+        )
+
+        try:
+            write_output(df, failback_output, apply_formatting=apply_formatting)
+            return failback_output, True
+        except Exception as failback_error:
+            print(f"[WARN] Failback save also failed for '{failback_output}' -> {failback_error}. Continuing.")
+            return None, True
+
+
+# =========================
+# Job status detection
+# =========================
+
+def detect_job_status(driver, params: Dict) -> Tuple[str, Optional[str]]:
+    """
+    Detect job status based on UI messages in the job details page/panel.
+    """
+    selectors = params.get("status_selectors", {}) or {}
+    closed_texts = params.get("status_closed_texts", []) or []
+    applied_texts = params.get("status_applied_texts", []) or []
+
+    applied_sel = (selectors.get("applied_banner") or "").strip()
+    alert_sel = (selectors.get("any_alert_container") or "").strip()
+    root_sel = (selectors.get("right_panel_root") or "body").strip()
+
+    if applied_sel:
+        try:
+            el = driver.find_element(By.CSS_SELECTOR, applied_sel)
+            msg = (el.text or "").strip()
+            if msg:
+                msg_norm = normalize_text(msg)
+                for t in applied_texts:
+                    if normalize_text(t) in msg_norm:
+                        return "applied", msg
+        except Exception:
+            pass
+
+    page_text = ""
+    try:
+        root = driver.find_element(By.CSS_SELECTOR, root_sel)
+        page_text = (root.text or "").strip()
+    except Exception:
+        try:
+            page_text = (driver.find_element(By.TAG_NAME, "body").text or "").strip()
+        except Exception:
+            page_text = ""
+
+    page_text_norm = normalize_text(page_text)
+
+    if "status da candidatura" in page_text_norm:
+        for t in applied_texts:
+            if normalize_text(t) in page_text_norm:
+                return "applied", t
+
+    if "application status" in page_text_norm:
+        for t in applied_texts:
+            if normalize_text(t) in page_text_norm:
+                return "applied", t
+
+    if "acessar site da empresa" in page_text_norm:
+        for t in applied_texts:
+            if normalize_text(t) in page_text_norm:
+                return "applied", t
+        return "applied", "Acessar site da empresa"
+
+    if "visit company website" in page_text_norm or "go to company website" in page_text_norm:
+        for t in applied_texts:
+            if normalize_text(t) in page_text_norm:
+                return "applied", t
+        return "applied", "Company website application status"
+
+    alert_text = ""
+    if alert_sel:
+        try:
+            alerts = driver.find_elements(By.CSS_SELECTOR, alert_sel)
+            alert_text = " ".join([(a.text or "").strip() for a in alerts if (a.text or "").strip()]).strip()
+        except Exception:
+            alert_text = ""
+
+    blob = normalize_text(" ".join([page_text, alert_text]))
+
+    for t in closed_texts:
+        if normalize_text(t) in blob:
+            return "closed", t
+
+    for t in applied_texts:
+        if normalize_text(t) in blob:
+            return "applied", t
+
+    return "open", None
+
+
+# =========================
+# Scrolling (left panel)
+# =========================
 
 def pick_scrollable_descendant(driver, root_el):
-    """
-    LinkedIn often uses nested containers. This function tries to find the first descendant
-    that is actually scrollable (overflow-y: auto/scroll and scrollHeight > clientHeight).
-    Returns the best candidate element (or root_el as fallback).
-    """
     try:
-        candidates = driver.execute_script(
+        candidate = driver.execute_script(
             """
             const root = arguments[0];
             const els = [root, ...root.querySelectorAll('*')];
@@ -437,9 +556,10 @@ def pick_scrollable_descendant(driver, root_el):
             """,
             root_el,
         )
-        return candidates
+        return candidate
     except Exception:
         return root_el
+
 
 
 def get_first_scroll_container(driver, selectors: List[str]):
@@ -452,6 +572,7 @@ def get_first_scroll_container(driver, selectors: List[str]):
     return None, None
 
 
+
 def scroll_left_results_panel(driver,
                               container_selectors: List[str],
                               job_container_selector: str,
@@ -459,18 +580,6 @@ def scroll_left_results_panel(driver,
                               pause_s: float,
                               sleep_min: float,
                               sleep_max: float) -> None:
-    """
-    Force-load more jobs by scrolling the LEFT list until it stops growing.
-
-    Strategy:
-    - Find the left panel root element using container_selectors
-    - Find the actual scrollable descendant (sometimes LinkedIn scrolls a child)
-    - In each round:
-        - Count current job containers
-        - Scroll to the last visible job container using scrollIntoView
-        - Also scroll the scrollable element by a chunk
-        - Wait and check if count increased
-    """
     sel_used, root = get_first_scroll_container(driver, container_selectors)
     if not root:
         print(f"[WARN] Could not find left scroll container. Tried: {container_selectors}")
@@ -483,7 +592,6 @@ def scroll_left_results_panel(driver,
     stable_rounds = 0
 
     for r in range(max_rounds):
-        # Count job containers currently loaded
         try:
             containers = driver.find_elements(By.CSS_SELECTOR, job_container_selector)
             count = len(containers)
@@ -491,51 +599,310 @@ def scroll_left_results_panel(driver,
             containers = []
             count = 0
 
-        # print(f"[DEBUG] Left scroll round {r+1}: current job containers={count}")
-
         if count == prev_count:
             stable_rounds += 1
         else:
             stable_rounds = 0
 
-        # If it hasn't grown for a few rounds, stop
         if stable_rounds >= 3:
             break
 
         prev_count = count
 
-        # Scroll to last job container (more reliable than scrollTop)
         if containers:
             try:
                 driver.execute_script("arguments[0].scrollIntoView({block: 'end'});", containers[-1])
             except Exception:
                 pass
 
-        # Also scroll the scrollable element itself
         try:
-            before = driver.execute_script("return arguments[0].scrollTop;", scroll_el)
-            driver.execute_script("arguments[0].scrollTop = arguments[0].scrollTop + arguments[0].clientHeight;", scroll_el)
-            after = driver.execute_script("return arguments[0].scrollTop;", scroll_el)
-            # print(f"[DEBUG] scrollTop before={before} after={after}")
+            driver.execute_script(
+                "arguments[0].scrollTop = arguments[0].scrollTop + arguments[0].clientHeight;",
+                scroll_el
+            )
         except Exception:
             pass
 
-        time.sleep(0.5)
-        # sleep_random(sleep_min, sleep_max)
+        time.sleep(pause_s)
+        sleep_random(sleep_min, sleep_max)
 
     print(f"[INFO] Left panel scroll completed (rounds={r+1})")
 
-def clean_job_title(raw_title: str) -> str:
-    """
-    Clean LinkedIn job titles that may include extra labels like 'with verification'.
-    """
-    t = (raw_title or "").strip()
-    # Common suffix seen in aria-label
-    t = re.sub(r"\s+with verification\s*$", "", t, flags=re.IGNORECASE)
-    return t.strip()
+
+# =========================
+# Scraping (stale-proof: snapshot URLs)
+# =========================
+
+def scrape_jobs(
+    driver: webdriver.Chrome,
+    params: Dict,
+    existing_df: pd.DataFrame,
+    output_file: str,
+    job_name: str,
+) -> pd.DataFrame:
+    job_name = str(job_name).strip()
+    max_pages = int(params.get("max_pages", 1))
+
+    sleep_min = float(params.get("sleep_min_seconds", 1.0))
+    sleep_max = float(params.get("sleep_max_seconds", 2.0))
+
+    job_container_selector = str(params.get("job_container_selector", "")).strip()
+    job_link_selector = str(params.get("job_link_selector", "")).strip()
+    company_selector = str(params.get("company_selector", "")).strip()
+    location_selector = str(params.get("location_selector", "")).strip()
+    description_selectors = params.get("description_selectors", []) or []
+
+    require_pos = bool(params.get("require_at_least_one_positive_keyword", True))
+    allow_without_pos = bool(params.get("allow_add_without_positive_match", False))
+
+    pos_keywords = params.get("positive_keywords", {}) or {}
+    neg_keywords = params.get("negative_keywords", {}) or {}
+    blocklist = params.get("blocklist_keywords", []) or []
+
+    geo_id = int(params.get("geo_id", 92000000))
+    remote_f_wt = params.get("remote_filter_f_wt", 2)
+    sort_by_most_recent = bool(params.get("sort_by_most_recent", False))
+    start_step = int(params.get("start_step", 25))
+
+    ignored_job_ids = {str(x).strip() for x in (params.get("ignored_job_ids", []) or []) if str(x).strip()}
+    save_after_each_job = bool(params.get("save_after_each_job", False))
+    apply_row_formatting = bool(params.get("apply_row_formatting", True))
+    required_title_keywords = params.get("required_title_keywords", []) or []
+    title_blocklist_keywords = params.get("title_blocklist_keywords", []) or []
+
+    if not job_container_selector or not job_link_selector:
+        raise SystemExit("Missing required selectors in params.yaml: job_container_selector and job_link_selector")
+
+    existing_by_url: Dict[str, int] = {}
+    if not existing_df.empty:
+        for idx, row in existing_df.iterrows():
+            url = canonical_job_url(str(row.get("url") or "").strip())
+            if url:
+                existing_df.at[idx, "url"] = url
+                existing_df.at[idx, "job_id"] = extract_job_id_from_url(url) or ""
+                existing_by_url[url] = idx
+
+    seen_in_this_run = set()
+
+    print(f"[INFO] Starting search for job_name: {job_name}")
+
+    for page in range(max_pages):
+        start = page * start_step
+        search_url = build_linkedin_url(job_name, geo_id, remote_f_wt, sort_by_most_recent, start=start)
+
+        print(f"[INFO] [{job_name}] Page {page + 1}/{max_pages} -> Opening search URL: {search_url}")
+        driver.get(search_url)
+        sleep_random(sleep_min, sleep_max)
+
+        scroll_left_results_panel(
+            driver,
+            container_selectors=params.get("left_list_scroll_container_selectors", []) or [],
+            job_container_selector=job_container_selector,
+            max_rounds=int(params.get("left_list_scroll_max_rounds", 30)),
+            pause_s=float(params.get("left_list_scroll_pause_seconds", 1.0)),
+            sleep_min=sleep_min,
+            sleep_max=sleep_max,
+        )
+
+        try:
+            containers = driver.find_elements(By.CSS_SELECTOR, job_container_selector)
+        except Exception as e:
+            print(f"[WARN] [{job_name}] Page {page + 1}: Failed to find containers -> {e}")
+            containers = []
+
+        job_urls: List[str] = []
+        job_meta_by_url: Dict[str, Dict[str, str]] = {}
+
+        for c in containers:
+            try:
+                link_el = c.find_element(By.CSS_SELECTOR, job_link_selector)
+                url = canonical_job_url(link_el.get_attribute("href") or "")
+                if not url:
+                    continue
+
+                job_id = extract_job_id_from_url(url) or ""
+                if job_id and job_id in ignored_job_ids:
+                    continue
+
+                title = (link_el.get_attribute("aria-label") or "").strip() or (link_el.text or "").strip()
+                title = clean_job_title(title)
+                title_norm = normalize_text(title)
+
+                if required_title_keywords and not any(normalize_text(k) in title_norm for k in required_title_keywords):
+                    print(f"[INFO] [{job_name}] Page {page + 1}: Skipped due to title filter -> {title}")
+                    continue
+
+                if title_blocklist_keywords and any(normalize_text(k) in title_norm for k in title_blocklist_keywords):
+                    print(f"[INFO] [{job_name}] Page {page + 1}: Skipped due to title blocklist -> {title}")
+                    continue
+
+                company = ""
+                if company_selector:
+                    try:
+                        company = (c.find_element(By.CSS_SELECTOR, company_selector).text or "").strip()
+                    except Exception:
+                        company = ""
+
+                job_loc = ""
+                if location_selector:
+                    try:
+                        job_loc = (c.find_element(By.CSS_SELECTOR, location_selector).text or "").strip()
+                    except Exception:
+                        job_loc = ""
+
+                job_urls.append(url)
+                job_meta_by_url[url] = {
+                    "job_id": job_id,
+                    "title": title,
+                    "company": company,
+                    "location": job_loc,
+                }
+            except Exception:
+                continue
+
+        seen = set()
+        job_urls = [u for u in job_urls if not (u in seen or seen.add(u))]
+        print(f"[INFO] [{job_name}] Page {page + 1}: Found {len(job_urls)} job URLs")
+
+        for j, job_url in enumerate(job_urls, start=1):
+            print(f"[INFO] [{job_name}] Page {page + 1}, Job {j} -> Processing URL...")
+            sleep_random(sleep_min, sleep_max)
+
+            try:
+                if job_url in seen_in_this_run:
+                    print(f"[INFO] [{job_name}] Page {page + 1}, Job {j}: Already processed in this run, skipping")
+                    continue
+                seen_in_this_run.add(job_url)
+
+                job_id = extract_job_id_from_url(job_url) or ""
+                if job_id and job_id in ignored_job_ids:
+                    print(f"[INFO] [{job_name}] Page {page + 1}, Job {j}: Ignored by job_id={job_id}")
+                    continue
+
+                clicked = False
+                if job_id:
+                    try:
+                        fresh_link = driver.find_element(By.CSS_SELECTOR, f'a[href*="/jobs/view/"][href*="{job_id}"]')
+                        driver.execute_script("arguments[0].click();", fresh_link)
+                        clicked = True
+                    except Exception:
+                        clicked = False
+
+                if not clicked:
+                    driver.get(job_url)
+
+                sleep_random(sleep_min, sleep_max)
+
+                meta = job_meta_by_url.get(job_url, {})
+                title = meta.get("title", "")
+                company = meta.get("company", "")
+                job_loc = meta.get("location", "")
+
+                if not title:
+                    try:
+                        title = driver.find_element(By.CSS_SELECTOR, "h1").text.strip()
+                        title = clean_job_title(title)
+                    except Exception:
+                        title = ""
+
+                description = find_first_text_by_selectors(driver, description_selectors)
+                status, status_detail = detect_job_status(driver, params)
+                combined_text = " ".join([title, company, job_loc, description])
+
+                blocked_by = any_blocked(combined_text, blocklist)
+                if blocked_by:
+                    print(f"[INFO] [{job_name}] Page {page + 1}, Job {j}: Blocked by keyword -> {blocked_by}")
+                    continue
+
+                score, matched_pos, matched_neg = compute_score(combined_text, pos_keywords, neg_keywords)
+                has_pos_match = len(matched_pos) > 0
+                if require_pos and (not has_pos_match) and (not allow_without_pos):
+                    print(f"[INFO] [{job_name}] Page {page + 1}, Job {j}: No positive keyword match, skipping by policy")
+                    continue
+
+                now_date = today_iso()
+                now_ts = utc_now_iso()
+
+                if job_url in existing_by_url:
+                    idx = existing_by_url[job_url]
+                    existing_df.at[idx, "last_seen"] = now_date
+                    existing_df.at[idx, "last_scraped_at"] = now_ts
+
+                    if title:
+                        existing_df.at[idx, "title"] = title
+                    if company:
+                        existing_df.at[idx, "company"] = company
+                    if job_loc:
+                        existing_df.at[idx, "location"] = job_loc
+
+                    existing_df.at[idx, "job_id"] = job_id
+                    existing_df.at[idx, "description"] = description or existing_df.at[idx, "description"]
+                    existing_df.at[idx, "linkedin_status"] = status
+                    existing_df.at[idx, "linkedin_status_detail"] = status_detail
+                    derived = derive_effective_row_state(existing_df.loc[idx], params)
+                    for key, value in derived.items():
+                        existing_df.at[idx, key] = value
+                    print(f"[OK] [{job_name}] Page {page + 1}, Job {j}: Updated existing job")
+                else:
+                    new_row = {
+                        "title": title,
+                        "company": company,
+                        "location": job_loc,
+                        "status": status,
+                        "linkedin_status": status,
+                        "score": score,
+                        "matched_positive_keywords": ", ".join(matched_pos),
+                        "matched_negative_keywords": ", ".join(matched_neg),
+                        "url": job_url,
+                        "job_id": job_id,
+                        "description": description,
+                        "first_seen": now_date,
+                        "last_seen": now_date,
+                        "last_scraped_at": now_ts,
+                        "status_detail": status_detail,
+                        "linkedin_status_detail": status_detail,
+                        "notes": "",
+                    }
+                    existing_df = pd.concat([existing_df, pd.DataFrame([new_row])], ignore_index=True)
+                    existing_by_url[job_url] = existing_df.index[-1]
+                    derived = derive_effective_row_state(existing_df.loc[existing_df.index[-1]], params)
+                    for key, value in derived.items():
+                        existing_df.at[existing_df.index[-1], key] = value
+                    print(f"[OK] [{job_name}] Page {page + 1}, Job {j}: Added new job to output")
+
+                if save_after_each_job:
+                    try:
+                        saved_path, used_failback = write_output_with_failback(
+                            existing_df,
+                            output_file,
+                            apply_formatting=apply_row_formatting,
+                        )
+                        if used_failback and saved_path:
+                            print(
+                                f"[WARN] [{job_name}] Incremental save redirected to failback -> "
+                                f"{saved_path} (rows={len(existing_df)})"
+                            )
+                        elif saved_path:
+                            print(f"[INFO] [{job_name}] Incremental save -> {saved_path} (rows={len(existing_df)})")
+                        else:
+                            print(f"[WARN] [{job_name}] Incremental save failed and failback also failed. Continuing.")
+                    except Exception as e:
+                        print(f"[WARN] [{job_name}] Incremental save failed -> {e}")
+
+            except StaleElementReferenceException as e:
+                print(f"[WARN] [{job_name}] Page {page + 1}, Job {j}: Stale element -> {e}")
+            except Exception as e:
+                print(f"[WARN] [{job_name}] Page {page + 1}, Job {j}: Error processing job -> {e}")
+
+        sleep_random(sleep_min, sleep_max)
+
+    return recalculate_output_rows(existing_df, params)
+
+
 
 def main():
-    params = load_params("params.yaml")
+    params = load_params(PARAMS_PATH)
+    job_names = resolve_job_names(params)
 
     load_dotenv()
     email = os.getenv("LINKEDIN_EMAIL", "").strip()
@@ -545,6 +912,8 @@ def main():
         raise SystemExit("Missing LINKEDIN_EMAIL / LINKEDIN_PASSWORD. Create a local .env file (not committed).")
 
     output_file = str(params.get("output_file", "jobs.xlsx")).strip()
+    output_file = os.path.expanduser(output_file)
+    output_file = os.path.abspath(output_file)
     headless = bool(params.get("headless", False))
 
     sleep_min = float(params.get("sleep_min_seconds", 1.0))
@@ -556,9 +925,24 @@ def main():
     driver = init_driver(headless=headless)
     try:
         login_linkedin(driver, email, password, sleep_min, sleep_max)
-        updated_df = scrape_jobs(driver, params, existing_df, output_file)
-        write_output(updated_df, output_file)
-        print(f"[OK] Saved output file: {output_file} (rows={len(updated_df)})")
+        updated_df = existing_df
+        total_job_names = len(job_names)
+
+        for index, job_name in enumerate(job_names, start=1):
+            print(f"[INFO] Starting batch search {index}/{total_job_names} for '{job_name}'")
+            updated_df = scrape_jobs(driver, params, updated_df, output_file, job_name)
+
+        saved_path, used_failback = write_output_with_failback(
+            updated_df,
+            output_file,
+            apply_formatting=bool(params.get("apply_row_formatting", True)),
+        )
+        if used_failback and saved_path:
+            print(f"[WARN] Final save redirected to failback -> {saved_path} (rows={len(updated_df)})")
+        elif saved_path:
+            print(f"[OK] Saved output file: {saved_path} (rows={len(updated_df)})")
+        else:
+            print("[WARN] Final save failed and failback also failed. Finishing without saving final file.")
     finally:
         driver.quit()
 
