@@ -6,6 +6,7 @@ It:
 - Logs into LinkedIn using credentials from a local `.env` file (not committed)
 - Searches jobs by keyword + location
 - Applies simple include/exclude keyword filters
+- Can skip jobs whose description is not in English
 - Exports results to `jobs.xlsx` (or `jobs.csv`)
 - Deduplicates by job URL
 
