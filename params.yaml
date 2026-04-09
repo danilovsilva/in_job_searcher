@@ -1,33 +1,53 @@
-# =========================
+﻿# =========================
 # in_job_searcher parameters
 # =========================
 
-# Search parameters
-job_name:                          # Job keywords used in LinkedIn search URL
+# Search targets.
+# Each item becomes a separate LinkedIn search query.
+job_name:
   - "Senior Data Engineer"
   - "Staff Data Engineer"
   - "Principal Data Engineer"
   - "Data Architect"
-location: "Remote"                # Location used in LinkedIn search URL
-max_pages: 10                     # Number of result pages to iterate (each page is usually ~25 jobs)
 
-# Browser / behavior
-headless: false                    # If true, runs Chrome in headless mode
-sleep_min_seconds: 2.0             # Minimum delay (seconds) for random sleeps between steps
-sleep_max_seconds: 5.0             # Maximum delay (seconds) for random sleeps between steps
+# Informational search label kept for reference.
+# The current scraper builds the LinkedIn URL from `geo_id` and `remote_filter_f_wt`.
+location: "Remote"
 
-# Output
-output_file: "C:/Users/Danilo/OneDrive/Documents/Curriculo/2026/jobs.xlsx"           # Output file path (.xlsx or .csv)
-append_existing_jobs: false        # If true, duplicates can be appended as new rows (NOT recommended)
-                                  # IMPORTANT: regardless of this setting, if a job already exists we always update its "last_seen" date.
+# Number of LinkedIn result pages to visit for each job_name.
+# LinkedIn typically shows about 25 jobs per page.
+max_pages: 10
+
+# Browser behavior.
+# Set to true to run Chrome without opening a visible window.
+headless: false
+
+# Minimum and maximum random delay between actions.
+# Using a range helps make navigation less aggressive.
+sleep_min_seconds: 2.0
+sleep_max_seconds: 5.0
+
+# Output file path. Supported formats: .xlsx and .csv
+output_file: "C:/Users/Danilo/OneDrive/Documents/Curriculo/2026/jobs.xlsx"
+
+# Reserved setting from older versions.
+# The current logic updates existing rows by canonical job URL instead of appending duplicates.
+append_existing_jobs: false
+
+# If true, save the output file after each processed job.
+# This is slower, but safer if the run is interrupted.
 save_after_each_job: true
 
-# Inclusion policy
-require_at_least_one_positive_keyword: false  # If true, job must match >=1 positive keyword to be eligible (unless overridden below)
-allow_add_without_positive_match: false      # If true, jobs with zero positive matches can still be added (as long as not blocked)
+# Eligibility policy.
+# When true, at least one positive keyword match is required unless explicitly overridden below.
+require_at_least_one_positive_keyword: false
 
-# Keyword rules
-# Positive keywords (good signals): weight increases ranking score when found.
+# If true, jobs without any positive keyword match may still be added,
+# as long as they are not rejected by another rule.
+allow_add_without_positive_match: false
+
+# Positive ranking signals.
+# Each matched keyword adds its weight to the final score.
 positive_keywords:
   # "Data Engineer": 5
   # "Senior Data Engineer": 6
@@ -43,7 +63,6 @@ positive_keywords:
   "LATAM": 6
   "global": 4
   "(global)": 4
-
   "B2B ": 10
   "Databricks": 6
   "Azure": 6
@@ -51,11 +70,13 @@ positive_keywords:
   "Independent contractor": 7
   "Contractor": 7
   "Brazil": 3
-  "Work From Home": 4 
+  "Work From Home": 4
   "WFH": 4
   "LI-Remote": 5
 
-# Negative keywords (bad signals): weight decreases ranking score when found but do not automatically exclude
+# Negative ranking signals.
+# Each matched keyword subtracts its weight from the final score,
+# but does not automatically remove the job.
 negative_keywords:
   "Software developer": 4
   "based in US": 6
@@ -86,7 +107,9 @@ negative_keywords:
   "W3": 3
   "Strong experience with AWS": 3
 
-# Blocklist keywords: if any is found, the job is skipped entirely and never goes to output.
+# Hard exclusion keywords.
+# If any of these strings appears in the combined job text,
+# the job is not added to the output.
 blocklist_keywords:
   - "US citizens only"
   - "must be a US citizen"
@@ -112,7 +135,6 @@ blocklist_keywords:
   - "relocating to Barcelona"
   - "Portugal | Remote"
   - "anywhere across Latvia"
-
   - "Remote Canada"
   - "Remote United States"
   - "anywhere in the EU"
@@ -127,24 +149,33 @@ blocklist_keywords:
   - "Remote (Portugal)"
   - "U.S. Citizenship"
 
-# Company filters: if matched, the job is skipped and removed from output.
+# Company-name exclusions.
+# If the company name contains one of these entries,
+# the job is marked as Skipped with the matching reason.
 blocked_companies:
   - "BairesDev"
   - "Tata Consultancy Services"
   - "Proxify"
   - "Aubay Portugal"
 
-# Description language filter:
-# LinkedIn may prepend localized labels like "Sobre a vaga".
-# The scraper removes common prefixes before language detection.
+# Description language filter.
+# If enabled, the job description is language-detected after removing common UI prefixes.
 exclude_non_english_descriptions: true
+
+# Allowed language codes for job descriptions.
+# Keep `en` to accept English-only descriptions.
 allowed_description_languages:
   - "en"
+
+# If true, language detection failures also exclude the job.
+# If false, only confirmed non-allowed languages are excluded.
 exclude_when_language_detection_fails: false
 
-# If true, remove jobs that indicate they are from / focused on India.
-exclude_india_companies: true
-india_filter_keywords:
+# Generic geography/locality filter.
+# If enabled, the scraper looks for these terms in title, company, location, and description.
+# Matches are marked as Skipped for existing rows or ignored for new rows.
+exclude_by_location_keywords: true
+location_filter_keywords:
   - "India"
   - "Bangalore"
   - "Bengaluru"
@@ -158,27 +189,37 @@ india_filter_keywords:
   - "Remote - India"
   - "India (Remote)"
   - "Cingapura"
-  - "Índia"
-  
-# Ignore list (jobs you already reviewed and don't want to see again)
+  - "Ãndia"
+
+# Jobs in this list are always ignored by LinkedIn job ID.
 ignored_job_ids:
   - "4370882746"
 
-# Excel formatting
+# Apply row coloring in Excel output based on status.
 apply_row_formatting: true
 
-# Search URL controls (LinkedIn)
-geo_id: 92000000            # Worldwide
-remote_filter_f_wt: 2       # Remote filter (f_WT=2)
-start_step: 25              # Usually 25 results per page
+# LinkedIn search URL controls.
+# `geo_id=92000000` means worldwide.
+geo_id: 92000000
+
+# LinkedIn remote-work filter used in the search URL.
+# `2` is the remote filter currently used by this project.
+remote_filter_f_wt: 2
+
+# Pagination step used by LinkedIn result pages.
+# In practice this is usually 25 jobs per page.
+start_step: 25
+
+# If true, ask LinkedIn to sort by newest jobs first.
 sort_by_most_recent: true
 
-# Status detection
+# Texts used to detect closed jobs in the job details page.
 status_closed_texts:
-  - "Não aceita mais candidaturas"
+  - "NÃ£o aceita mais candidaturas"
   - "No longer accepting applications"
   - "This job is no longer accepting applications"
 
+# Texts used to detect applied jobs in the job details page.
 status_applied_texts:
   - "Candidatou-se"
   - "Candidatou-se no site da empresa"
@@ -189,6 +230,8 @@ status_applied_texts:
   - "Applied on company website"
   - "Applied on the company website"
 
+# Required title terms.
+# At least one of these must appear in the normalized job title.
 required_title_keywords:
   - "data engineer"
   - "analytics engineer"
@@ -197,6 +240,8 @@ required_title_keywords:
   - "principal data engineer"
   - "data"
 
+# Title-level exclusions.
+# If one of these appears in the title, the row is marked as canceled.
 title_blocklist_keywords:
   - "software engineer"
   - "frontend"
@@ -204,44 +249,51 @@ title_blocklist_keywords:
   - "ML"
   - "Python Developer"
 
-
 # =========================
 # Scraping selectors
 # =========================
 
+# CSS selector for each job card container in the LinkedIn results list.
 job_container_selector: "div.artdeco-entity-lockup__content"
+
+# CSS selector used to extract the clickable job link from each card.
 job_link_selector: 'a[href*="/jobs/view/"]'
+
+# CSS selector used to read the company name from a job card.
 company_selector: "div.artdeco-entity-lockup__subtitle span"
+
+# CSS selector used to read the displayed location from a job card.
 location_selector: "div.artdeco-entity-lockup__caption span"
 
+# CSS selectors checked in order to read the job description area.
 description_selectors:
   - "div.jobs-description__content"
   - "div.jobs-box__html-content"
 
+# Candidate CSS selectors for the left-side scrollable results panel.
+# The scraper uses the first selector that exists on the page.
 left_list_scroll_container_selectors:
   - "div.scaffold-layout__list"
   # - "div.scaffold-layout__list-container"
   # - "div.jobs-search-results-list"
   # - "div.scaffold-layout__list-detail-inner"
+
+# Maximum number of scrolling rounds used to load more jobs in the left panel.
 left_list_scroll_max_rounds: 25
+
+# Base pause between left-panel scroll attempts.
 left_list_scroll_pause_seconds: 1.0
 
-# Status detection
+# CSS selectors used by the status detector.
 status_selectors:
-  # LinkedIn success banner (applied)
+  # Success banner shown after a LinkedIn Easy Apply submission.
   applied_banner: "div.artdeco-inline-feedback--success span.artdeco-inline-feedback__message"
 
-  # Generic alert containers (sometimes used for closed / warnings)
+  # Generic alert containers that may include closed/applied messages.
   any_alert_container: '[role="alert"]'
 
-  # Optional: right panel root (limits text scanning)
-  # right_panel_root: "div.scaffold-layout__detail"
+  # Root node used to gather visible text while checking status.
   right_panel_root: "body"
-  
-  # NEW: application status section (the one from your screenshot)
-  application_status_section: "section, div"
 
-# status_selectors:
-#   applied_banner: "div.artdeco-inline-feedback--success span.artdeco-inline-feedback__message"
-#   any_alert_container: '[role="alert"]'
-#   right_panel_root: "body"
+  # Reserved selector for future use with dedicated application-status sections.
+  application_status_section: "section, div"

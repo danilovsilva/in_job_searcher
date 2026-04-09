@@ -340,13 +340,13 @@ def matches_blocked_company(company: str, blocked_companies: List[str]) -> Optio
     return None
 
 
-def matches_india_filter(title: str, company: str, location: str, description: str, params: Dict) -> Optional[str]:
-    if not bool(params.get("exclude_india_companies", False)):
+def matches_location_filter(title: str, company: str, location: str, description: str, params: Dict) -> Optional[str]:
+    if not bool(params.get("exclude_by_location_keywords", False)):
         return None
 
-    india_keywords = params.get("india_filter_keywords", []) or []
+    location_keywords = params.get("location_filter_keywords", []) or []
     combined_text = " ".join([title, company, location, description]).strip()
-    return find_matching_keyword(combined_text, india_keywords)
+    return find_matching_keyword(combined_text, location_keywords)
 
 
 def should_exclude_job(title: str, company: str, location: str, description: str, params: Dict) -> Optional[str]:
@@ -358,9 +358,9 @@ def should_exclude_job(title: str, company: str, location: str, description: str
     if language_match:
         return language_match
 
-    india_match = matches_india_filter(title, company, location, description, params)
-    if india_match:
-        return f"india filter: {india_match}"
+    location_match = matches_location_filter(title, company, location, description, params)
+    if location_match:
+        return f"location filter: {location_match}"
 
     return None
 
