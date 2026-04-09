@@ -8,3 +8,5 @@ __pycache__
 *.csv
 *.xlsx
 .venv/
+logs/*.txt
+!logs/.gitkeep

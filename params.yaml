@@ -64,6 +64,7 @@ negative_keywords:
   "Must be located in": 6
   "come onsite": 6
   "Relocation": 6
+  "Relocating": 6
   # "Remote Canada": 4
   # "Remote United States": 6
   # "anywhere in the EU": 5
@@ -92,6 +93,25 @@ blocklist_keywords:
   - "active U.S. government issued security clearance"
   - "TS/SCI"
   - "security clearance required"
+  - "live in the UK"
+  - "based out of Netherlands"
+  - "Remote (US)"
+  - "No third-party candidates"
+  - "Remote in UK"
+  - "remotely from within Canada"
+  - "eligible to work for any US employer"
+  - "residency in the U.S"
+  - "Germany (Remote)"
+  - "Spain (Remote)"
+  - "Romania (Remote)"
+  - "W2"
+  - "Mexico - Remote"
+  - "anywhere across Lithuania"
+  - "anywhere in the continental U.S"
+  - "no third parties"
+  - "relocating to Barcelona"
+  - "Portugal | Remote"
+  - "anywhere across Latvia"
 
   - "Remote Canada"
   - "Remote United States"
@@ -105,6 +125,40 @@ blocklist_keywords:
   - "Remote from US"
   - "Remote (Canada)"
   - "Remote (Portugal)"
+  - "U.S. Citizenship"
+
+# Company filters: if matched, the job is skipped and removed from output.
+blocked_companies:
+  - "BairesDev"
+  - "Tata Consultancy Services"
+  - "Proxify"
+  - "Aubay Portugal"
+
+# Description language filter:
+# LinkedIn may prepend localized labels like "Sobre a vaga".
+# The scraper removes common prefixes before language detection.
+exclude_non_english_descriptions: true
+allowed_description_languages:
+  - "en"
+exclude_when_language_detection_fails: false
+
+# If true, remove jobs that indicate they are from / focused on India.
+exclude_india_companies: true
+india_filter_keywords:
+  - "India"
+  - "Bangalore"
+  - "Bengaluru"
+  - "Hyderabad, India"
+  - "Pune"
+  - "Mumbai"
+  - "Chennai"
+  - "Gurugram"
+  - "Noida"
+  - "New Delhi"
+  - "Remote - India"
+  - "India (Remote)"
+  - "Cingapura"
+  - "Índia"
   
 # Ignore list (jobs you already reviewed and don't want to see again)
 ignored_job_ids:

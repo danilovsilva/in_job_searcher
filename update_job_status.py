@@ -13,6 +13,7 @@ from main import (
     login_linkedin,
     read_existing_output,
     recalculate_output_rows,
+    setup_run_logging,
     sleep_random,
     write_output_with_failback,
 )
@@ -22,6 +23,9 @@ PROJECT_DIR = Path(__file__).resolve().parent
 
 
 def update_status():
+    log_file_path = setup_run_logging("update_job_status")
+    print(f"[INFO] Writing logs to: {log_file_path}")
+
     params = load_params(PARAMS_PATH)
 
     load_dotenv()
@@ -45,7 +49,7 @@ def update_status():
         return
 
     df = read_existing_output(output_file)
-    df = recalculate_output_rows(df, params)
+    df = recalculate_output_rows(df, params, emit_logs=True)
     saved_path, used_failback = write_output_with_failback(
         df,
         output_file,

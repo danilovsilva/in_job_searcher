@@ -1,10 +1,12 @@
+import atexit
 import os
-import time
 import random
 import re
+import sys
+import time
 from pathlib import Path
 from datetime import datetime, date
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, TextIO, Tuple
 
 import pandas as pd
 import yaml
@@ -17,12 +19,90 @@ from selenium.common.exceptions import StaleElementReferenceException
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 
+try:
+    from langdetect import DetectorFactory, LangDetectException, detect
+
+    DetectorFactory.seed = 0
+except Exception:
+    detect = None
+    LangDetectException = Exception
+
 
 # =========================
 # Basic helpers
 # =========================
 PROJECT_DIR = Path(__file__).resolve().parent
 PARAMS_PATH = PROJECT_DIR / "params.yaml"
+LOGS_DIR = PROJECT_DIR / "logs"
+_ACTIVE_LOG_FILE: Optional[TextIO] = None
+_ORIGINAL_STDOUT = sys.stdout
+_ORIGINAL_STDERR = sys.stderr
+
+
+class TeeStream:
+    def __init__(self, *streams: TextIO):
+        self.streams = streams
+
+    def write(self, data: str) -> int:
+        for stream in self.streams:
+            stream.write(data)
+            stream.flush()
+        return len(data)
+
+    def flush(self) -> None:
+        for stream in self.streams:
+            stream.flush()
+
+    def isatty(self) -> bool:
+        return any(getattr(stream, "isatty", lambda: False)() for stream in self.streams)
+
+
+def build_log_file_path(script_name: str) -> Path:
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    safe_name = re.sub(r"[^a-zA-Z0-9_-]+", "_", script_name).strip("_") or "run"
+    return LOGS_DIR / f"{timestamp}_{safe_name}_log.txt"
+
+
+def setup_run_logging(script_name: str) -> Path:
+    global _ACTIVE_LOG_FILE
+
+    if _ACTIVE_LOG_FILE is not None:
+        return Path(_ACTIVE_LOG_FILE.name)
+
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    log_file_path = build_log_file_path(script_name)
+    log_file = open(log_file_path, "a", encoding="utf-8", buffering=1)
+
+    started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    header = [
+        "=" * 80,
+        f"Script started at: {started_at}",
+        f"Script name: {script_name}",
+        "=" * 80,
+        "",
+    ]
+    log_file.write("\n".join(header))
+    log_file.flush()
+
+    sys.stdout = TeeStream(_ORIGINAL_STDOUT, log_file)
+    sys.stderr = TeeStream(_ORIGINAL_STDERR, log_file)
+    _ACTIVE_LOG_FILE = log_file
+    return log_file_path
+
+
+def close_run_logging() -> None:
+    global _ACTIVE_LOG_FILE
+
+    if _ACTIVE_LOG_FILE is None:
+        return
+
+    sys.stdout = _ORIGINAL_STDOUT
+    sys.stderr = _ORIGINAL_STDERR
+    _ACTIVE_LOG_FILE.close()
+    _ACTIVE_LOG_FILE = None
+
+
+atexit.register(close_run_logging)
 
 
 def utc_now_iso() -> str:
@@ -161,6 +241,68 @@ def clean_job_title(raw_title: str) -> str:
     return t.strip()
 
 
+DESCRIPTION_PREFIX_PATTERNS = [
+    r"^\s*sobre a vaga\b[:\s-]*",
+    r"^\s*about the job\b[:\s-]*",
+    r"^\s*job description\b[:\s-]*",
+    r"^\s*descri(?:ç|c)[aã]o da vaga\b[:\s-]*",
+]
+
+
+def strip_description_prefix(raw_description: str) -> str:
+    description = (raw_description or "").strip()
+    if not description:
+        return ""
+
+    cleaned = description
+    for pattern in DESCRIPTION_PREFIX_PATTERNS:
+        cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE)
+
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
+def detect_text_language(text: str) -> Optional[str]:
+    sample = strip_description_prefix(text)
+    if not sample:
+        return None
+
+    # The detector gets more stable with a minimum amount of alphabetic text.
+    alpha_only = re.sub(r"[^A-Za-zÀ-ÿ]+", " ", sample)
+    if len(alpha_only.replace(" ", "")) < 30:
+        return None
+
+    if detect is None:
+        return None
+
+    try:
+        return detect(sample)
+    except LangDetectException:
+        return None
+
+
+def should_exclude_by_language(description: str, params: Dict) -> Optional[str]:
+    if not bool(params.get("exclude_non_english_descriptions", False)):
+        return None
+
+    detected_language = detect_text_language(description)
+    allowed_languages = {
+        normalize_text(lang)
+        for lang in (params.get("allowed_description_languages", ["en"]) or ["en"])
+        if str(lang).strip()
+    }
+
+    if not detected_language:
+        if bool(params.get("exclude_when_language_detection_fails", False)):
+            return "language detection failed"
+        return None
+
+    if normalize_text(detected_language) not in allowed_languages:
+        return f"description language: {detected_language}"
+
+    return None
+
+
 # =========================
 # Keyword logic (ranking + filtering)
 # =========================
@@ -183,6 +325,61 @@ def any_blocked(text: str, blocklist: List[str]) -> Optional[str]:
         if normalize_text(kw) in blob:
             return kw
     return None
+
+
+def matches_blocked_company(company: str, blocked_companies: List[str]) -> Optional[str]:
+    company_norm = normalize_text(company)
+    if not company_norm:
+        return None
+
+    for blocked_company in blocked_companies or []:
+        blocked_norm = normalize_text(blocked_company)
+        if blocked_norm and blocked_norm in company_norm:
+            return blocked_company
+
+    return None
+
+
+def matches_india_filter(title: str, company: str, location: str, description: str, params: Dict) -> Optional[str]:
+    if not bool(params.get("exclude_india_companies", False)):
+        return None
+
+    india_keywords = params.get("india_filter_keywords", []) or []
+    combined_text = " ".join([title, company, location, description]).strip()
+    return find_matching_keyword(combined_text, india_keywords)
+
+
+def should_exclude_job(title: str, company: str, location: str, description: str, params: Dict) -> Optional[str]:
+    blocked_company = matches_blocked_company(company, params.get("blocked_companies", []) or [])
+    if blocked_company:
+        return f"blocked company: {blocked_company}"
+
+    language_match = should_exclude_by_language(description, params)
+    if language_match:
+        return language_match
+
+    india_match = matches_india_filter(title, company, location, description, params)
+    if india_match:
+        return f"india filter: {india_match}"
+
+    return None
+
+
+def exclusion_status_detail(excluded_by: str) -> str:
+    return f"Skipped by company/location filter: {excluded_by}"
+
+
+def summarize_job_for_log(title: str, company: str, location: str, url: str = "") -> str:
+    parts = []
+    if title.strip():
+        parts.append(f"title='{title.strip()}'")
+    if company.strip():
+        parts.append(f"company='{company.strip()}'")
+    if location.strip():
+        parts.append(f"location='{location.strip()}'")
+    if url.strip():
+        parts.append(f"url='{url.strip()}'")
+    return ", ".join(parts) if parts else "job metadata unavailable"
 
 
 
@@ -216,6 +413,7 @@ OUTPUT_COLUMNS = [
     "url",
     "job_id",
     "description",
+    "description_language",
     "first_seen",
     "last_seen",
     "last_scraped_at",
@@ -288,6 +486,7 @@ def derive_effective_row_state(row: pd.Series, params: Dict) -> Dict[str, object
     company = str(row.get("company") or "").strip()
     job_loc = str(row.get("location") or "").strip()
     description = str(row.get("description") or "").strip()
+    description_language = detect_text_language(description) or ""
     notes = str(row.get("notes") or row.get("Note") or "").strip()
 
     combined_text = " ".join([title, company, job_loc, description]).strip()
@@ -314,6 +513,7 @@ def derive_effective_row_state(row: pd.Series, params: Dict) -> Dict[str, object
     title_norm = normalize_text(title)
 
     note_skip_match = find_matching_keyword(notes, LOCAL_SKIP_NOTE_PATTERNS)
+    excluded_by = should_exclude_job(title, company, job_loc, description, params)
     title_blocked_by = find_matching_keyword(title, title_blocklist_keywords)
     blocked_by = any_blocked(combined_text, blocklist)
     missing_required_title = bool(required_title_keywords) and not any(
@@ -324,6 +524,9 @@ def derive_effective_row_state(row: pd.Series, params: Dict) -> Dict[str, object
     if note_skip_match:
         effective_status = "Skipped"
         effective_detail = f"Skipped by notes: {notes or note_skip_match}"
+    elif excluded_by:
+        effective_status = "Skipped"
+        effective_detail = exclusion_status_detail(excluded_by)
     elif title_blocked_by:
         effective_status = "Canceled"
         effective_detail = f"Canceled by title_blocklist_keywords: {title_blocked_by}"
@@ -341,6 +544,7 @@ def derive_effective_row_state(row: pd.Series, params: Dict) -> Dict[str, object
         "score": int(score),
         "matched_positive_keywords": ", ".join(matched_pos),
         "matched_negative_keywords": ", ".join(matched_neg),
+        "description_language": description_language,
         "linkedin_status": linkedin_status or "open",
         "linkedin_status_detail": linkedin_detail,
         "status": effective_status,
@@ -348,13 +552,27 @@ def derive_effective_row_state(row: pd.Series, params: Dict) -> Dict[str, object
     }
 
 
-def recalculate_output_rows(df: pd.DataFrame, params: Dict) -> pd.DataFrame:
+def recalculate_output_rows(df: pd.DataFrame, params: Dict, emit_logs: bool = False) -> pd.DataFrame:
     df = ensure_output_schema(df.copy())
 
     for idx, row in df.iterrows():
         derived = derive_effective_row_state(row, params)
         for key, value in derived.items():
             df.at[idx, key] = value
+        if emit_logs:
+            excluded_by = should_exclude_job(
+                str(row.get("title") or ""),
+                str(row.get("company") or ""),
+                str(row.get("location") or ""),
+                str(row.get("description") or ""),
+                params,
+            )
+            if excluded_by:
+                print(
+                    "[INFO] Existing output row marked as Skipped by company/location filter -> "
+                    f"{excluded_by} | "
+                    f"{summarize_job_for_log(str(row.get('title') or ''), str(row.get('company') or ''), str(row.get('location') or ''), str(row.get('url') or ''))}"
+                )
 
     try:
         df["score"] = pd.to_numeric(df["score"], errors="coerce").fillna(0).astype(int)
@@ -722,6 +940,7 @@ def scrape_jobs(
 
                 job_id = extract_job_id_from_url(url) or ""
                 if job_id and job_id in ignored_job_ids:
+                    print(f"[INFO] [{job_name}] Page {page + 1}: Ignored by job_id during listing -> {job_id}")
                     continue
 
                 title = (link_el.get_attribute("aria-label") or "").strip() or (link_el.text or "").strip()
@@ -729,11 +948,17 @@ def scrape_jobs(
                 title_norm = normalize_text(title)
 
                 if required_title_keywords and not any(normalize_text(k) in title_norm for k in required_title_keywords):
-                    print(f"[INFO] [{job_name}] Page {page + 1}: Skipped due to title filter -> {title}")
+                    print(
+                        f"[INFO] [{job_name}] Page {page + 1}: Skipped due to title filter -> "
+                        f"{summarize_job_for_log(title, '', '', url)}"
+                    )
                     continue
 
                 if title_blocklist_keywords and any(normalize_text(k) in title_norm for k in title_blocklist_keywords):
-                    print(f"[INFO] [{job_name}] Page {page + 1}: Skipped due to title blocklist -> {title}")
+                    print(
+                        f"[INFO] [{job_name}] Page {page + 1}: Skipped due to title blocklist -> "
+                        f"{summarize_job_for_log(title, '', '', url)}"
+                    )
                     continue
 
                 company = ""
@@ -770,13 +995,16 @@ def scrape_jobs(
 
             try:
                 if job_url in seen_in_this_run:
-                    print(f"[INFO] [{job_name}] Page {page + 1}, Job {j}: Already processed in this run, skipping")
+                    print(
+                        f"[INFO] [{job_name}] Page {page + 1}, Job {j}: Already processed in this run, skipping -> "
+                        f"url='{job_url}'"
+                    )
                     continue
                 seen_in_this_run.add(job_url)
 
                 job_id = extract_job_id_from_url(job_url) or ""
                 if job_id and job_id in ignored_job_ids:
-                    print(f"[INFO] [{job_name}] Page {page + 1}, Job {j}: Ignored by job_id={job_id}")
+                    print(f"[INFO] [{job_name}] Page {page + 1}, Job {j}: Ignored by job_id={job_id} -> url='{job_url}'")
                     continue
 
                 clicked = False
@@ -809,15 +1037,71 @@ def scrape_jobs(
                 status, status_detail = detect_job_status(driver, params)
                 combined_text = " ".join([title, company, job_loc, description])
 
+                excluded_by = should_exclude_job(title, company, job_loc, description, params)
+                if excluded_by:
+                    now_date = today_iso()
+                    now_ts = utc_now_iso()
+                    if job_url in existing_by_url:
+                        idx = existing_by_url[job_url]
+                        existing_df.at[idx, "last_seen"] = now_date
+                        existing_df.at[idx, "last_scraped_at"] = now_ts
+                        existing_df.at[idx, "job_id"] = job_id
+                        if title:
+                            existing_df.at[idx, "title"] = title
+                        if company:
+                            existing_df.at[idx, "company"] = company
+                        if job_loc:
+                            existing_df.at[idx, "location"] = job_loc
+                        if description:
+                            existing_df.at[idx, "description"] = description
+                        existing_df.at[idx, "linkedin_status"] = status
+                        existing_df.at[idx, "linkedin_status_detail"] = status_detail
+                        existing_df.at[idx, "status"] = "Skipped"
+                        existing_df.at[idx, "status_detail"] = exclusion_status_detail(excluded_by)
+                        print(
+                            f"[INFO] [{job_name}] Page {page + 1}, Job {j}: Existing output row marked as Skipped -> "
+                            f"{excluded_by} | {summarize_job_for_log(title, company, job_loc, job_url)}"
+                        )
+                        if save_after_each_job:
+                            try:
+                                saved_path, used_failback = write_output_with_failback(
+                                    existing_df,
+                                    output_file,
+                                    apply_formatting=apply_row_formatting,
+                                )
+                                if used_failback and saved_path:
+                                    print(
+                                        f"[WARN] [{job_name}] Incremental save redirected to failback -> "
+                                        f"{saved_path} (rows={len(existing_df)})"
+                                    )
+                                elif saved_path:
+                                    print(f"[INFO] [{job_name}] Incremental save -> {saved_path} (rows={len(existing_df)})")
+                                else:
+                                    print(f"[WARN] [{job_name}] Incremental save failed and failback also failed. Continuing.")
+                            except Exception as e:
+                                print(f"[WARN] [{job_name}] Incremental save failed -> {e}")
+                    else:
+                        print(
+                            f"[INFO] [{job_name}] Page {page + 1}, Job {j}: Not added to output by company/location filter -> "
+                            f"{excluded_by} | {summarize_job_for_log(title, company, job_loc, job_url)}"
+                        )
+                    continue
+
                 blocked_by = any_blocked(combined_text, blocklist)
                 if blocked_by:
-                    print(f"[INFO] [{job_name}] Page {page + 1}, Job {j}: Blocked by keyword -> {blocked_by}")
+                    print(
+                        f"[INFO] [{job_name}] Page {page + 1}, Job {j}: Not added to output by blocklist keyword -> "
+                        f"{blocked_by} | {summarize_job_for_log(title, company, job_loc, job_url)}"
+                    )
                     continue
 
                 score, matched_pos, matched_neg = compute_score(combined_text, pos_keywords, neg_keywords)
                 has_pos_match = len(matched_pos) > 0
                 if require_pos and (not has_pos_match) and (not allow_without_pos):
-                    print(f"[INFO] [{job_name}] Page {page + 1}, Job {j}: No positive keyword match, skipping by policy")
+                    print(
+                        f"[INFO] [{job_name}] Page {page + 1}, Job {j}: Not added to output by positive keyword policy | "
+                        f"{summarize_job_for_log(title, company, job_loc, job_url)}"
+                    )
                     continue
 
                 now_date = today_iso()
@@ -901,6 +1185,9 @@ def scrape_jobs(
 
 
 def main():
+    log_file_path = setup_run_logging("main")
+    print(f"[INFO] Writing logs to: {log_file_path}")
+
     params = load_params(PARAMS_PATH)
     job_names = resolve_job_names(params)
 
@@ -920,6 +1207,7 @@ def main():
     sleep_max = float(params.get("sleep_max_seconds", 2.0))
 
     existing_df = read_existing_output(output_file)
+    existing_df = recalculate_output_rows(existing_df, params, emit_logs=True)
     print(f"[INFO] Existing output rows: {len(existing_df)}")
 
     driver = init_driver(headless=headless)
