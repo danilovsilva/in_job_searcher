@@ -16,7 +16,7 @@ location: "Remote"
 
 # Number of LinkedIn result pages to visit for each job_name.
 # LinkedIn typically shows about 25 jobs per page.
-max_pages: 10
+max_pages: 3
 
 # Browser behavior.
 # Set to true to run Chrome without opening a visible window.
@@ -28,7 +28,7 @@ sleep_min_seconds: 2.0
 sleep_max_seconds: 5.0
 
 # Output file path. Supported formats: .xlsx and .csv
-output_file: "C:/Users/Danilo/OneDrive/Documents/Curriculo/2026/jobs.xlsx"
+output_file: "C:/Users/Danilo/OneDrive/Documents/Curriculo/2026/jobs_remote.xlsx"
 
 # Reserved setting from older versions.
 # The current logic updates existing rows by canonical job URL instead of appending duplicates.
@@ -40,7 +40,7 @@ save_after_each_job: true
 
 # Eligibility policy.
 # When true, at least one positive keyword match is required unless explicitly overridden below.
-require_at_least_one_positive_keyword: false
+require_at_least_one_positive_keyword: true
 
 # If true, jobs without any positive keyword match may still be added,
 # as long as they are not rejected by another rule.
@@ -53,23 +53,27 @@ positive_keywords:
   # "Senior Data Engineer": 6
   # "Staff Data Engineer": 7
   # "Data Architect": 5
-  "Remote": 1
+
+  # "Remote": 1
   "Remote from anywhere": 10
   "remote first": 7
+  "remote-first": 7
   "work from anywhere": 10
   "Worldwide": 10
-  "Distributed team": 4
-  "global team": 4
-  "LATAM": 6
-  "global": 4
-  "(global)": 4
-  "B2B ": 10
-  "Databricks": 6
-  "Azure": 6
-  "Pipeline": 3
-  "Independent contractor": 7
+  # "Distributed team": 4
+  # "global team": 4
+  # "LATAM": 6
+  # "global": 4
+  # "(global)": 4
+  # "B2B ": 10
+  # "Databricks": 6
+  # "Azure": 6
+  # "Pipeline": 3
+  # "Independent contractor": 7
   "Contractor": 7
   "Brazil": 3
+  "Brasil": 3
+  "LATAM": 3
   "Work From Home": 4
   "WFH": 4
   "LI-Remote": 5
@@ -148,6 +152,15 @@ blocklist_keywords:
   - "Remote (Canada)"
   - "Remote (Portugal)"
   - "U.S. Citizenship"
+  - "Europe remote"
+  - "Remote, United States"
+  - "Poland Remote"
+  - "Only in Argentina"
+  - "Location: Europe (EU)"
+  - "Remote from Poland"
+  - "anywhere in the United States"
+  - "anywhere in the US"
+  - "Remote (Poland)"
 
 # Company-name exclusions.
 # If the company name contains one of these entries,
@@ -189,7 +202,7 @@ location_filter_keywords:
   - "Remote - India"
   - "India (Remote)"
   - "Cingapura"
-  - "Ãndia"
+  - "Índia"
 
 # Jobs in this list are always ignored by LinkedIn job ID.
 ignored_job_ids:
@@ -199,8 +212,11 @@ ignored_job_ids:
 apply_row_formatting: true
 
 # LinkedIn search URL controls.
-# `geo_id=92000000` means worldwide.
-geo_id: 92000000
+# Geo ids are searched in order for each configured job_name.
+geo_id:
+  - 92000000   # Worldwide
+  - 91000011   # LATAM
+  - 106057199  # Brazil
 
 # LinkedIn remote-work filter used in the search URL.
 # `2` is the remote filter currently used by this project.
