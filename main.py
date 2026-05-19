@@ -173,6 +173,40 @@ def resolve_job_names(params: Dict) -> List[str]:
     return cleaned_job_names
 
 
+GEO_ID_LABELS = {
+    92000000: "Worldwide",
+    91000011: "LATAM",
+    106057199: "Brazil",
+}
+
+
+def geo_id_label(geo_id: int) -> str:
+    return GEO_ID_LABELS.get(int(geo_id), str(int(geo_id)))
+
+
+def resolve_geo_ids(params: Dict) -> List[int]:
+    raw_geo_ids = params.get("geo_id", 92000000)
+
+    if isinstance(raw_geo_ids, list):
+        geo_ids = raw_geo_ids
+    else:
+        geo_ids = [raw_geo_ids]
+
+    cleaned_geo_ids: List[int] = []
+    for item in geo_ids:
+        if item is None or isinstance(item, bool) or str(item).strip() == "":
+            raise SystemExit("Invalid 'geo_id' in params.yaml. Use an integer or a list of integers.")
+        try:
+            cleaned_geo_ids.append(int(str(item).strip()))
+        except (TypeError, ValueError):
+            raise SystemExit("Invalid 'geo_id' in params.yaml. Use an integer or a list of integers.")
+
+    if not cleaned_geo_ids:
+        raise SystemExit("No valid geo ids found in params.yaml. Fill 'geo_id' with at least one value.")
+
+    return cleaned_geo_ids
+
+
 
 def build_linkedin_url(job_name: str, geo_id: int, remote_f_wt: Optional[int], sort_by_most_recent: Optional[int], start: int = 0) -> str:
     """
@@ -417,6 +451,8 @@ OUTPUT_COLUMNS = [
     "first_seen",
     "last_seen",
     "last_scraped_at",
+    "search_geo_id",
+    "search_geo_label",
     "status_detail",
     "linkedin_status_detail",
     "notes",
@@ -857,6 +893,7 @@ def scrape_jobs(
     existing_df: pd.DataFrame,
     output_file: str,
     job_name: str,
+    geo_id: int,
 ) -> pd.DataFrame:
     job_name = str(job_name).strip()
     max_pages = int(params.get("max_pages", 1))
@@ -877,7 +914,8 @@ def scrape_jobs(
     neg_keywords = params.get("negative_keywords", {}) or {}
     blocklist = params.get("blocklist_keywords", []) or []
 
-    geo_id = int(params.get("geo_id", 92000000))
+    geo_id = int(geo_id)
+    search_geo_label = geo_id_label(geo_id)
     remote_f_wt = params.get("remote_filter_f_wt", 2)
     sort_by_most_recent = bool(params.get("sort_by_most_recent", False))
     start_step = int(params.get("start_step", 25))
@@ -902,13 +940,13 @@ def scrape_jobs(
 
     seen_in_this_run = set()
 
-    print(f"[INFO] Starting search for job_name: {job_name}")
+    print(f"[INFO] Starting search for job_name: {job_name} | geo_id={geo_id} ({search_geo_label})")
 
     for page in range(max_pages):
         start = page * start_step
         search_url = build_linkedin_url(job_name, geo_id, remote_f_wt, sort_by_most_recent, start=start)
 
-        print(f"[INFO] [{job_name}] Page {page + 1}/{max_pages} -> Opening search URL: {search_url}")
+        print(f"[INFO] [{job_name}] [{search_geo_label}] Page {page + 1}/{max_pages} -> Opening search URL: {search_url}")
         driver.get(search_url)
         sleep_random(sleep_min, sleep_max)
 
@@ -1045,6 +1083,8 @@ def scrape_jobs(
                         idx = existing_by_url[job_url]
                         existing_df.at[idx, "last_seen"] = now_date
                         existing_df.at[idx, "last_scraped_at"] = now_ts
+                        existing_df.at[idx, "search_geo_id"] = geo_id
+                        existing_df.at[idx, "search_geo_label"] = search_geo_label
                         existing_df.at[idx, "job_id"] = job_id
                         if title:
                             existing_df.at[idx, "title"] = title
@@ -1111,6 +1151,8 @@ def scrape_jobs(
                     idx = existing_by_url[job_url]
                     existing_df.at[idx, "last_seen"] = now_date
                     existing_df.at[idx, "last_scraped_at"] = now_ts
+                    existing_df.at[idx, "search_geo_id"] = geo_id
+                    existing_df.at[idx, "search_geo_label"] = search_geo_label
 
                     if title:
                         existing_df.at[idx, "title"] = title
@@ -1143,6 +1185,8 @@ def scrape_jobs(
                         "first_seen": now_date,
                         "last_seen": now_date,
                         "last_scraped_at": now_ts,
+                        "search_geo_id": geo_id,
+                        "search_geo_label": search_geo_label,
                         "status_detail": status_detail,
                         "linkedin_status_detail": status_detail,
                         "notes": "",
@@ -1190,6 +1234,7 @@ def main():
 
     params = load_params(PARAMS_PATH)
     job_names = resolve_job_names(params)
+    geo_ids = resolve_geo_ids(params)
 
     load_dotenv()
     email = os.getenv("LINKEDIN_EMAIL", "").strip()
@@ -1215,10 +1260,14 @@ def main():
         login_linkedin(driver, email, password, sleep_min, sleep_max)
         updated_df = existing_df
         total_job_names = len(job_names)
+        total_geo_ids = len(geo_ids)
 
         for index, job_name in enumerate(job_names, start=1):
             print(f"[INFO] Starting batch search {index}/{total_job_names} for '{job_name}'")
-            updated_df = scrape_jobs(driver, params, updated_df, output_file, job_name)
+            for geo_index, geo_id in enumerate(geo_ids, start=1):
+                label = geo_id_label(geo_id)
+                print(f"[INFO] [{job_name}] Starting geo_id {geo_id} ({label}) {geo_index}/{total_geo_ids}")
+                updated_df = scrape_jobs(driver, params, updated_df, output_file, job_name, geo_id)
 
         saved_path, used_failback = write_output_with_failback(
             updated_df,
